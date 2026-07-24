@@ -136,7 +136,9 @@
     transform: translate(-50%,-100%) rotate(0deg);
     border-radius:2px;
     box-shadow:0 0 6px rgba(238,205,139,.6);
+    transition: transform .16s linear;
   }
+  .dial .needle.dragging{ transition:none; }
   .dial .hub{
     position:absolute; left:50%; top:50%; width:16px; height:16px;
     background:radial-gradient(circle at 35% 30%, #cfd6dd, #6b7280 70%);
@@ -331,24 +333,24 @@
 
 const TIERS = [
   { key:0, name:"Rusty Tumbler", flavor:"An old office safe. The tumblers are loose — anyone patient enough can feel them fall.",
-    mechanic:"dial", numCount:3, baseTolerance:6, drift:0.10, baseReward:8, unlockCost:0 },
+    mechanic:"dial", numCount:3, baseTolerance:8, drift:0.05, baseReward:24, unlockCost:0 },
   { key:1, name:"Steel Padlock", flavor:"Three dials, one lock. Every wheel has to line up before the shackle gives.",
-    mechanic:"multidial", numCount:3, baseTolerance:4.5, drift:0.16, baseReward:48, unlockCost:300 },
+    mechanic:"multidial", numCount:3, baseTolerance:6, drift:0.10, baseReward:75, unlockCost:180 },
   { key:2, name:"Electronic Keypad", flavor:"No tumblers here — just a memory circuit that flashes its own code before locking you out.",
-    mechanic:"memory", seqLen:4, baseReward:230, unlockCost:3500, baseTime:4200 },
+    mechanic:"memory", seqLen:4, baseReward:340, unlockCost:2000, baseTime:4200 },
   { key:3, name:"Vault Wheel", flavor:"A bank-grade wheel that never sits still. Hold each number steady long enough and the bolts retract.",
-    mechanic:"vault", numCount:4, baseTolerance:3.2, drift:0.34, holdTime:1300, baseReward:1500, unlockCost:32000 },
+    mechanic:"vault", numCount:4, baseTolerance:4.5, drift:0.22, holdTime:1300, baseReward:2200, unlockCost:18000 },
 ];
 
 const UPGRADE_DEFS = {
-  precision: { name:"Steady Aim", desc:"Widens the sweet spot on every dial and calms their drift.", base:60, mult:1.55, max:14 },
-  payout:    { name:"Fence Connections", desc:"+15% cash from every safe you crack, manual or automated.", base:90, mult:1.62, max:20 },
-  speed:     { name:"Quick Fingers", desc:"More reaction time on keypads, and shorter holds on the vault wheel.", base:120, mult:1.6, max:12 },
-  botEff:    { name:"Bot Efficiency", desc:"Your Auto-Crackers work faster.", base:200, mult:1.7, max:14 },
+  precision: { name:"Steady Aim", desc:"Widens the sweet spot on every dial and calms their drift.", base:35, mult:1.45, max:14 },
+  payout:    { name:"Fence Connections", desc:"+15% cash from every safe you crack, manual or automated.", base:45, mult:1.5, max:20 },
+  speed:     { name:"Quick Fingers", desc:"More reaction time on keypads, and shorter holds on the vault wheel.", base:60, mult:1.5, max:12 },
+  botEff:    { name:"Bot Efficiency", desc:"Your Auto-Crackers work faster.", base:110, mult:1.55, max:14 },
 };
 
-const BOT_BASE_COST = 450;
-const BOT_COST_MULT = 1.16;
+const BOT_BASE_COST = 220;
+const BOT_COST_MULT = 1.14;
 const BOT_BASE_CYCLE_MS = 5200;
 
 /* ============================== STATE ============================== */
@@ -515,11 +517,55 @@ function tick(){
     logEvent(total, {auto:true});
   }
 
+  updateDialVisuals();
   renderStats();
   renderLog();
   save();
 }
 let botAccum = 0;
+
+function setHeatLabelEl(el, cfg, value, target, lockedOverride){
+  if(!el) return;
+  if(lockedOverride){ el.textContent = "LOCKED"; return; }
+  const tol = toleranceFor(cfg);
+  const dist = circDist(value, target);
+  const heat = heatInfo(dist, tol);
+  el.textContent = heat.label;
+  el.style.color = heat.color;
+}
+
+// Updates needle rotation, readings, and heat labels every tick WITHOUT rebuilding
+// the DOM — keeps the CSS transition smooth and avoids tearing down drag listeners.
+function updateDialVisuals(){
+  const cfg = TIERS[state.activeTier];
+  const puz = state.puzzles[state.activeTier];
+  if(!puz) return;
+
+  if(puz.mechanic === "dial"){
+    const needle = document.getElementById("needleMain");
+    if(needle) needle.style.transform = `translate(-50%,-100%) rotate(${puz.value/100*360}deg)`;
+    const reading = document.getElementById("dialReading");
+    if(reading) reading.textContent = Math.round(puz.value);
+    setHeatLabelEl(document.getElementById("heatLabelMain"), cfg, puz.value, puz.targets[puz.activeIndex]);
+  }
+  else if(puz.mechanic === "multidial"){
+    puz.values.forEach((v,i)=>{
+      const needle = document.getElementById("needle"+i);
+      if(needle) needle.style.transform = `translate(-50%,-100%) rotate(${v/100*360}deg)`;
+      setHeatLabelEl(document.getElementById("heatLabel"+i), cfg, v, puz.targets[i], puz.locked[i]);
+    });
+  }
+  else if(puz.mechanic === "vault"){
+    const needle = document.getElementById("needleMain");
+    if(needle) needle.style.transform = `translate(-50%,-100%) rotate(${puz.value/100*360}deg)`;
+    setHeatLabelEl(document.getElementById("heatLabelMain"), cfg, puz.value, puz.targets[puz.activeIndex]);
+    const holdPct = Math.min(100, 100*puz.holdProgress/holdTimeFor(cfg));
+    const fill = document.getElementById("holdbarFill");
+    if(fill) fill.style.width = holdPct + "%";
+    const pctText = document.getElementById("holdPctText");
+    if(pctText) pctText.textContent = Math.round(holdPct) + "%";
+  }
+}
 
 function allLocked(puz){
   if(puz.mechanic === "memory") return false;
@@ -592,12 +638,11 @@ function checkVaultHold(dt){
       puz.holdProgress = 0;
       flashDialFeedback(true);
       if(puz.locked.every(Boolean)) completeSafe();
-      else puz.activeIndex = puz.locked.indexOf(false);
+      else { puz.activeIndex = puz.locked.indexOf(false); renderMechanic(); }
     }
   } else {
     puz.holdProgress = Math.max(0, puz.holdProgress - dt*1.8);
   }
-  renderMechanic();
 }
 
 function completeSafe(){
@@ -681,6 +726,7 @@ function failMemory(){
 
 function attachDialControls(el, onChange, getValue){
   let dragging = false;
+  const needleEl = el.querySelector(".needle");
   function angleFromEvent(e, rect){
     const cx = rect.left + rect.width/2;
     const cy = rect.top + rect.height/2;
@@ -692,6 +738,7 @@ function attachDialControls(el, onChange, getValue){
   }
   el.addEventListener("pointerdown", (e)=>{
     dragging = true;
+    if(needleEl) needleEl.classList.add("dragging");
     el.setPointerCapture(e.pointerId);
   });
   el.addEventListener("pointermove", (e)=>{
@@ -701,8 +748,8 @@ function attachDialControls(el, onChange, getValue){
     const val = (deg/360*100) % 100;
     onChange(val);
   });
-  el.addEventListener("pointerup", ()=>{ dragging = false; });
-  el.addEventListener("pointercancel", ()=>{ dragging = false; });
+  el.addEventListener("pointerup", ()=>{ dragging = false; if(needleEl) needleEl.classList.remove("dragging"); });
+  el.addEventListener("pointercancel", ()=>{ dragging = false; if(needleEl) needleEl.classList.remove("dragging"); });
   el.addEventListener("wheel", (e)=>{
     if(!state.settings.scrollEnabled) return;
     e.preventDefault();
@@ -778,7 +825,7 @@ function renderMechanic(){
           <div class="needle" id="needleMain"></div>
           <div class="hub"></div>
         </div>
-        <div class="heat-label" style="color:${heat.color};background:rgba(255,255,255,0.03);">${heat.label}</div>
+        <div class="heat-label" id="heatLabelMain" style="color:${heat.color};background:rgba(255,255,255,0.03);">${heat.label}</div>
         <div class="dial-value">Reading: <b id="dialReading">${Math.round(puz.value)}</b></div>
       </div>
       <div class="actionrow">
@@ -807,7 +854,7 @@ function renderMechanic(){
             <div class="needle" id="needle${i}"></div>
             <div class="hub"></div>
           </div>
-          <div class="heat-label" style="color:${heat.color};background:rgba(255,255,255,0.03);font-size:10.5px;">${puz.locked[i]?'LOCKED':heat.label}</div>
+          <div class="heat-label" id="heatLabel${i}" style="color:${heat.color};background:rgba(255,255,255,0.03);font-size:10.5px;">${puz.locked[i]?'LOCKED':heat.label}</div>
         </div>
       `;
     });
@@ -882,9 +929,9 @@ function renderMechanic(){
           <div class="needle" id="needleMain"></div>
           <div class="hub"></div>
         </div>
-        <div class="heat-label" style="color:${heat.color};background:rgba(255,255,255,0.03);">${heat.label}</div>
-        <div class="dial-value">Hold steady — <b>${Math.round(holdPct)}%</b></div>
-        <div class="holdbar-wrap"><div class="holdbar" style="width:${holdPct}%;"></div></div>
+        <div class="heat-label" id="heatLabelMain" style="color:${heat.color};background:rgba(255,255,255,0.03);">${heat.label}</div>
+        <div class="dial-value">Hold steady — <b id="holdPctText">${Math.round(holdPct)}%</b></div>
+        <div class="holdbar-wrap"><div class="holdbar" id="holdbarFill" style="width:${holdPct}%;"></div></div>
       </div>
       <div class="actionrow">
         <button class="act" id="btnNewSafe">Walk away (new safe)</button>
